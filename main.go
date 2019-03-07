@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	client "github.com/s8sg/joinin/pkg/client"
-	server "github.com/s8sg/joinin/pkg/server"
+	client "github.com/s8sg/satellite/pkg/client"
+	server "github.com/s8sg/satellite/pkg/server"
 )
 
 var (
@@ -20,6 +20,8 @@ type Args struct {
 	Server  bool
 	Remote  string
 	Version bool
+	Create  bool
+	Join    string
 }
 
 func main() {
@@ -27,6 +29,8 @@ func main() {
 	flag.BoolVar(&args.Version, "version", false, "print version information and exit")
 	flag.IntVar(&args.Port, "port", 8000, "port for server")
 	flag.BoolVar(&args.Server, "server", true, "server or client")
+	flag.BoolVar(&args.Create, "create", false, "create new channel")
+	flag.StringVar(&args.Join, "join", "", "channel id")
 	flag.StringVar(&args.Remote, "remote", "127.0.0.1:8000", " server address i.e. 127.0.0.1:8000")
 	flag.Parse()
 
@@ -36,6 +40,7 @@ func main() {
 		os.Exit(0)
 
 	case args.Server:
+		// Server mode
 		server := server.Server{
 			Port: args.Port,
 		}
@@ -45,12 +50,23 @@ func main() {
 		}
 
 	case !args.Server:
+		// Client Mode
 		client := client.Client{
 			Remote: args.Remote,
 		}
-		err := client.Connect()
-		if err != nil {
-			panic(err)
+		if args.Create {
+			err := client.CreateChannel()
+			if err != nil {
+				panic(err)
+			}
+		} else if args.Join != "" {
+			client.ID = args.Join
+			err := client.JoinChannel()
+			if err != nil {
+				panic(err)
+			}
+		} else {
+			flag.Usage()
 		}
 	}
 }
