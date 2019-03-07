@@ -51,7 +51,7 @@ func (client *Client) CreateChannel() (err error) {
 		return err
 	}
 
-	fmt.Println("Channel created. join with, -join=", client.ID)
+	fmt.Printf("Join new channel with:\n\t -join=%s\n", client.ID)
 
 	// Wait to answer offer from peer
 	err = client.answer()
