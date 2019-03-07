@@ -1,129 +1,142 @@
-package pkg
+package server
 
 import (
-	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
-	"time"
+	"strings"
 
-	"github.com/pions/webrtc"
+	"github.com/gorilla/websocket"
+	"github.com/rs/xid"
+
+	"github.com/s8sg/satellite/pkg/transport"
 )
 
 type Server struct {
 	Port int // Port to host the HTTP Server
 }
 
-func (server *Server) Serve() error {
+// Serve
+func (s *Server) Serve() error {
 
-	// Prepare the configuration
-	config := webrtc.Configuration{
-		ICEServers: []webrtc.ICEServer{
-			{
-				URLs: []string{"stun:stun.l.google.com:19302"},
-			},
-		},
-	}
+	transport.InitRouter()
 
-	// Create a new RTCPeerConnection
-	peerConnection, err := webrtc.NewPeerConnection(config)
-	if err != nil {
+	http.HandleFunc("/create", channelCreateHandler())
+	http.HandleFunc("/tunnel", serveWS())
+
+	if err := http.ListenAndServe(fmt.Sprintf(":%d", s.Port), nil); err != nil {
 		return err
 	}
 
-	// Set the handler for ICE connection state
-	// This will notify you when the peer has connected/disconnected
-	peerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
-		fmt.Printf("ICE Connection State has changed: %s\n", connectionState.String())
-	})
-
-	// Register data channel creation handling
-	peerConnection.OnDataChannel(func(d *webrtc.DataChannel) {
-		fmt.Printf("New DataChannel %s %d\n", d.Label, d.ID)
-
-		// Register channel opening handling
-		d.OnOpen(func() {
-			fmt.Printf("Data channel '%s'-'%d' open. Random messages will now be sent to any connected DataChannels every 5 seconds\n", d.Label, d.ID)
-
-			for range time.NewTicker(5 * time.Second).C {
-				t := time.Now()
-				message := t.String()
-				fmt.Printf("Sending '%s'\n", message)
-
-				// Send the message as text
-				err := d.SendText(message)
-				if err != nil {
-					// TODO handle timeout
-					panic(err)
-				}
-			}
-		})
-
-		// Register text message handling
-		d.OnMessage(func(msg webrtc.DataChannelMessage) {
-			fmt.Printf("Message from DataChannel '%s': '%s'\n", d.Label, string(msg.Data))
-		})
-	})
-
-	// Exchange the offer/answer via HTTP
-	addr := fmt.Sprintf(":%d", server.Port)
-	offerChan, answerChan, err := exchangeOfferAndAnswer(addr)
-	if err != nil {
-		return err
-	}
-
-	// Wait for the remote SessionDescription
-	offer := <-offerChan
-
-	err = peerConnection.SetRemoteDescription(offer)
-	if err != nil {
-		return err
-	}
-
-	// Create answer
-	answer, err := peerConnection.CreateAnswer(nil)
-	if err != nil {
-		return err
-	}
-
-	// Sets the LocalDescription, and starts our UDP listeners
-	err = peerConnection.SetLocalDescription(answer)
-	if err != nil {
-		return err
-	}
-
-	// Send the answer
-	answerChan <- answer
-
-	// Block forever
-	select {}
+	return nil
 }
 
-// exchangeOfferAndAnswer exchange the SDP offer and answer using an HTTP server.
-func exchangeOfferAndAnswer(address string) (
-	offerOut chan webrtc.SessionDescription, answerIn chan webrtc.SessionDescription, err error) {
+// channelCreateHandler
+func channelCreateHandler() func(w http.ResponseWriter, r *http.Request) {
 
-	offerOut = make(chan webrtc.SessionDescription)
-	answerIn = make(chan webrtc.SessionDescription)
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Generate channel ID
+		channelID := xid.New().String()
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		var offer webrtc.SessionDescription
-		err = json.NewDecoder(r.Body).Decode(&offer)
-		if err != nil {
+		// Create Router
+		router := transport.CreateRouter(channelID)
+		router.Serve()
+
+		// Return thr channel Id
+		w.Write([]byte(channelID))
+	}
+}
+
+// serveWS
+func serveWS() func(w http.ResponseWriter, r *http.Request) {
+
+	var upgrader = websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		channelId := extractChannelId(r)
+		if channelId == "" {
+			log.Println("Extraction failed, invalid channel ID")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte("Invalid channel ID"))
 			return
 		}
 
-		offerOut <- offer
-		answer := <-answerIn
-
-		err = json.NewEncoder(w).Encode(answer)
+		// Give back a router item based on the Channel ID
+		router, err := transport.GetRouter(channelId)
 		if err != nil {
+			log.Println("No Router found, invalid channel ID")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte("invalid channel ID"))
 			return
 		}
 
-	})
+		// Get the incoming and outgioing channel from/to the router
+		incoming, outgoing := router.RetriveClientChannel()
 
-	go http.ListenAndServe(address, nil)
-	fmt.Println("Listening on", address)
+		ws, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			if _, ok := err.(websocket.HandshakeError); !ok {
+				log.Println(err)
+			}
+			return
+		}
 
-	return
+		log.Printf("SDP channel %s established with: %s",
+			channelId, ws.RemoteAddr())
+
+		connectionDone := make(chan struct{})
+
+		// Handle incoming
+		go func() {
+			defer close(connectionDone)
+			for {
+				messageType, message, err := ws.ReadMessage()
+				if err != nil {
+					log.Println("read:", err)
+					return
+				}
+
+				switch messageType {
+				case websocket.TextMessage:
+					log.Println("TextMessage: ", message)
+				case websocket.BinaryMessage:
+					incoming <- message
+				}
+			}
+		}()
+
+		// Handle outgoing
+		go func() {
+			defer close(connectionDone)
+			for {
+				message := <-outgoing
+
+				err := ws.WriteMessage(websocket.BinaryMessage, message)
+				if err != nil {
+					log.Println("write:", err)
+					return
+				}
+			}
+
+		}()
+
+		// close connection to server once exchnage is done
+		<-connectionDone
+		ws.Close()
+		router.Close()
+		transport.DeleteRouter(channelId)
+	}
+}
+
+// extractChannelId
+func extractChannelId(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	prefix := "Bearer "
+	if strings.HasPrefix(auth, prefix); len(auth) > len(prefix) {
+		return auth[len(prefix):]
+	}
+	return ""
 }
