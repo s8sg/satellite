@@ -105,7 +105,6 @@ func (router *Router) Serve() {
 			case data := <-router.Client1Incoming:
 				router.Client2Outgoing <- data
 			case <-router.RouterDone:
-				fmt.Println("Stopping Router")
 				return
 			}
 		}
@@ -114,9 +113,6 @@ func (router *Router) Serve() {
 
 // Close close a router
 func (router *Router) Close() {
+	fmt.Println("Stopping Router")
 	close(router.RouterDone)
-	close(router.Client1Outgoing)
-	close(router.Client2Outgoing)
-	close(router.Client1Incoming)
-	close(router.Client2Incoming)
 }

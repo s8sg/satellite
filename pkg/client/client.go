@@ -276,43 +276,76 @@ func (c *Client) ConnectUpstream() error {
 
 	log.Printf("SDP tunnel established: %s", ws.LocalAddr())
 
-	connectionDone := make(chan struct{})
+	connectionDone := make(chan int)
 	go func() {
+		defer func() {
+			close(connectionDone)
+		}()
 		for {
-			messageType, message, err := ws.ReadMessage()
-			if err != nil {
-				log.Println("read:", err)
+			select {
+
+			case <-connectionDone:
 				return
-			}
+			default:
+				messageType, message, err := ws.ReadMessage()
+				if err != nil {
+					log.Println("read:", err)
+					fmt.Println("Stopping Inbound Handler")
+					return
+				}
 
-			switch messageType {
-			case websocket.TextMessage:
-				log.Printf("TextMessage: %s\n", message)
+				switch messageType {
+				case websocket.TextMessage:
+					log.Printf("TextMessage: %s\n", message)
 
-			case websocket.BinaryMessage:
-				c.tunnel.Incoming <- message // Send message to the incoming channel
+				case websocket.BinaryMessage:
+					c.tunnel.Incoming <- message // Send message to the incoming channel
+				}
 			}
 
 		}
 	}()
 
+	stopListening := make(chan int)
 	go func() {
+		defer func() {
+			close(stopListening)
+		}()
 		for {
-			message := <-c.tunnel.Outgoing // Get message from the outgoing channel
-
-			err := ws.WriteMessage(websocket.BinaryMessage, message)
-			if err != nil {
-				log.Println("write:", err)
+			select {
+			case <-stopListening:
 				return
+			case message := <-c.tunnel.Outgoing:
+				err := ws.WriteMessage(websocket.BinaryMessage, message)
+				if err != nil {
+					log.Println("write:", err)
+					fmt.Println("Stopping Outbound Handler")
+					return
+				}
 			}
 		}
 	}()
 
 	// close connection to server once exchnage is done
 	go func() {
-		<-connectionDone
+		select {
+		case <-connectionDone:
+			fmt.Println("Stopping Outbound Handler")
+			stopListening <- 0
+		case <-stopListening:
+			fmt.Println("Stopping Inbound Handler")
+			connectionDone <- 0
+		}
 		ws.Close()
 		c.tunnel.Close()
+		for range time.NewTicker(5 * time.Second).C {
+			// Initiate a new connection to server
+			fmt.Println("Connection Lost with Server, retrying connection..")
+			err = c.ConnectUpstream()
+			if err == nil {
+				return
+			}
+		}
 	}()
 
 	return nil
