@@ -39,8 +39,7 @@ func channelCreateHandler() func(w http.ResponseWriter, r *http.Request) {
 		channelID := xid.New().String()
 
 		// Create Router
-		router := transport.CreateRouter(channelID)
-		router.Serve()
+		transport.CreateRouter(channelID)
 
 		// Return thr channel Id
 		w.Write([]byte(channelID))
@@ -56,25 +55,34 @@ func serveWS() func(w http.ResponseWriter, r *http.Request) {
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
-		channelId := extractChannelId(r)
-		if channelId == "" {
-			log.Println("Extraction failed, invalid channel ID")
+		// Extract the channel and client id from header
+		channel, cid := extractChannelId(r)
+		if channel == "" {
+			log.Println("Extraction failed, invalid channel or ID")
 			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte("Invalid channel ID"))
+			w.Write([]byte("Invalid channel or ID"))
 			return
 		}
 
 		// Give back a router item based on the Channel ID
-		router, err := transport.GetRouter(channelId)
+		router, err := transport.GetRouter(channel)
 		if err != nil {
-			log.Println("No Router found, invalid channel ID")
+			log.Println("No Router found, invalid channel")
 			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte("invalid channel ID"))
+			w.Write([]byte("invalid channel"))
 			return
 		}
 
-		// Get the incoming and outgioing channel from/to the router
-		incoming, outgoing := router.RetriveClientChannel()
+		// Get the incoming and outgoing channel from/to the router
+		tunnel := router.RetriveFreeTunnel(cid)
+		if tunnel == nil {
+			err = fmt.Errorf("Max no of connection reached, limit %d", transport.MAX_TUNNEL_PER_ROUTER)
+			log.Printf("%v", err)
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(err.Error()))
+			return
+		}
+		router.ServeTunnel(tunnel, transport.DefaultRouting)
 
 		ws, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -84,18 +92,18 @@ func serveWS() func(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		log.Printf("SDP channel %s established with: %s",
-			channelId, ws.RemoteAddr())
+		log.Printf("SDP signal tunnel established with %s as %s for channel %s",
+			cid, ws.RemoteAddr(), channel)
 
 		connectionDone := make(chan struct{})
 
-		// Handle incoming
+		// Handle incoming signal from the websocket and send it to incoming tunnel
 		go func() {
 			defer close(connectionDone)
 			for {
 				messageType, message, err := ws.ReadMessage()
 				if err != nil {
-					log.Println("read:", err)
+					log.Println("Error read:", err)
 					return
 				}
 
@@ -103,40 +111,40 @@ func serveWS() func(w http.ResponseWriter, r *http.Request) {
 				case websocket.TextMessage:
 					log.Println("TextMessage: ", message)
 				case websocket.BinaryMessage:
-					incoming <- message
+					tunnel.Incoming <- message
 				}
 			}
 		}()
 
-		// Handle outgoing
+		// Handle outgoing signal from the tunnel and send it to the websocket
 		go func() {
 			defer close(connectionDone)
 			for {
-				message := <-outgoing
+				message := <-tunnel.Outgoing
 
 				err := ws.WriteMessage(websocket.BinaryMessage, message)
 				if err != nil {
-					log.Println("write:", err)
+					log.Println("Error write:", err)
 					return
 				}
 			}
 
 		}()
 
-		// close connection to server once exchnage is done
 		<-connectionDone
 		ws.Close()
-		router.Close()
-		transport.DeleteRouter(channelId)
+		router.DecommissionTunnel(tunnel, cid)
 	}
 }
 
 // extractChannelId
-func extractChannelId(r *http.Request) string {
+func extractChannelId(r *http.Request) (channel string, ID string) {
 	auth := r.Header.Get("Authorization")
 	prefix := "Bearer "
 	if strings.HasPrefix(auth, prefix); len(auth) > len(prefix) {
-		return auth[len(prefix):]
+		splits := strings.Split(auth[len(prefix):], "-")
+		channel = splits[0]
+		ID = splits[1]
 	}
-	return ""
+	return
 }
