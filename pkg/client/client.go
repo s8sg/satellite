@@ -1,13 +1,11 @@
 package client
 
 import (
-	"bufio"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -21,11 +19,19 @@ import (
 var httpClient *http.Client
 
 type Client struct {
-	Remote  string // Remote server that has the HRRP Server
-	Port    int    // Port from which UI will be served
-	ID      string // Client Id
-	Channel string // Channel Id to join
-	tunnel  *transport.Tunnel
+	Remote       string            // Remote server that has the HRRP Server
+	Port         int               // Port from which UI will be served
+	ID           string            // Client Id
+	Channel      string            // Channel Id to join
+	signalTunnel *transport.Tunnel // tunnel with the signal server
+
+	IOTunnel *transport.Tunnel // Input/Output tunnel from user
+
+	/*
+		peers       map[string]*transport.Tunnel // tunnel for the peer connection
+		connMux     sync.Mutex                   // Sync connection handler
+		clientClose chan struct{}                // Graceful shutdown for client
+	*/
 }
 
 // CreateChannel creates a channel from server and join
@@ -46,7 +52,7 @@ func (client *Client) CreateChannel() (err error) {
 	client.Channel = string(channelId)
 
 	// Create the transport
-	client.tunnel = transport.GetTunnel()
+	client.signalTunnel = transport.GetTunnel()
 
 	// connect using websocket
 	err = client.connectUpstream()
@@ -58,18 +64,13 @@ func (client *Client) CreateChannel() (err error) {
 
 	// Wait to answer offer from peer
 	err = client.answer()
-	if err != nil {
-		return err
-	}
-
-	select {}
-
+	return err
 }
 
 // JoinChannel join a existing channel via server
 func (client *Client) JoinChannel() error {
 	// Create the transport
-	client.tunnel = transport.GetTunnel()
+	client.signalTunnel = transport.GetTunnel()
 
 	// connect using websocket
 	err := client.connectUpstream()
@@ -79,17 +80,13 @@ func (client *Client) JoinChannel() error {
 
 	// Send offer to peer
 	err = client.offer()
-	if err != nil {
-		return err
-	}
-
-	select {}
+	return err
 }
 
 // offer a webrtc request to a peer via Server
 func (client *Client) offer() error {
 	// Discover peers via tunnel
-	peers, err := getPeersViaTunnel(client.tunnel, client.ID)
+	peers, err := getPeersViaTunnel(client.signalTunnel, client.ID)
 	if err != nil {
 		return err
 	}
@@ -127,13 +124,12 @@ func (client *Client) offer() error {
 		dataChannel.OnOpen(func() {
 			fmt.Printf("Data channel '%s'-'%d' open. Typed messages will now be sent to any connected DataChannels\n", dataChannel.Label, dataChannel.ID)
 
-			reader := bufio.NewReader(os.Stdin)
 			for {
-				message, _ := reader.ReadString('\n')
+				data := <-client.IOTunnel.Outgoing
+				message := string(data)
 				// Send the message as text
 				err := dataChannel.SendText(message[:len(message)-1])
 				if err != nil {
-					// TODO: Handle timeout
 					panic(err)
 				}
 			}
@@ -141,7 +137,8 @@ func (client *Client) offer() error {
 
 		// Register text message handling
 		dataChannel.OnMessage(func(msg webrtc.DataChannelMessage) {
-			fmt.Printf("Message from '%s': '%s'\n", dataChannel.Label, string(msg.Data))
+			client.IOTunnel.Incoming <- msg.Data
+			//fmt.Printf("Message from '%s': '%s'\n", dataChannel.Label, string(msg.Data))
 		})
 
 		// Create an offer to send to the browser
@@ -157,7 +154,7 @@ func (client *Client) offer() error {
 		}
 
 		// Exchange the offer for the answer
-		answer, err := exchangeOfferViaTunnel(client.ID, peer, offer, client.tunnel)
+		answer, err := exchangeOfferViaTunnel(client.ID, peer, offer, client.signalTunnel)
 		if err != nil {
 			return err
 		}
@@ -203,13 +200,12 @@ func (client *Client) answer() error {
 		dataChannel.OnOpen(func() {
 			fmt.Printf("Data channel '%s'-'%d' open. Typed messages will now be sent to any connected DataChannels\n", dataChannel.Label, dataChannel.ID)
 
-			reader := bufio.NewReader(os.Stdin)
 			for {
-				message, _ := reader.ReadString('\n')
+				data := <-client.IOTunnel.Outgoing
+				message := string(data)
 				// Send the message as text
 				err := dataChannel.SendText(message[:len(message)-1])
 				if err != nil {
-					// TODO: Handle timeout
 					panic(err)
 				}
 			}
@@ -217,12 +213,13 @@ func (client *Client) answer() error {
 
 		// Register text message handling
 		dataChannel.OnMessage(func(msg webrtc.DataChannelMessage) {
-			fmt.Printf("Message from '%s': '%s'\n", dataChannel.Label, string(msg.Data))
+			client.IOTunnel.Incoming <- msg.Data
+			//fmt.Printf("Message from '%s': '%s'\n", dataChannel.Label, string(msg.Data))
 		})
 	})
 
 	// Exchange the offer/answer via HTTP
-	offerChan, answerChan, err := exchangeAnswerViaTunnel(client.tunnel)
+	offerChan, answerChan, err := exchangeAnswerViaTunnel(client.signalTunnel)
 	if err != nil {
 		return err
 	}
@@ -307,7 +304,7 @@ func (c *Client) connectUpstream() error {
 					log.Printf("TextMessage: %s\n", message)
 
 				case websocket.BinaryMessage:
-					c.tunnel.Incoming <- message // Send message to the incoming channel
+					c.signalTunnel.Incoming <- message // Send message to the incoming channel
 				}
 			}
 
@@ -323,7 +320,7 @@ func (c *Client) connectUpstream() error {
 			select {
 			case <-stopListening:
 				return
-			case message := <-c.tunnel.Outgoing:
+			case message := <-c.signalTunnel.Outgoing:
 				err := ws.WriteMessage(websocket.BinaryMessage, message)
 				if err != nil {
 					log.Println("write:", err)
@@ -345,7 +342,7 @@ func (c *Client) connectUpstream() error {
 			connectionDone <- 0
 		}
 		ws.Close()
-		c.tunnel.Close()
+		c.signalTunnel.Close()
 		for range time.NewTicker(5 * time.Second).C {
 			// Initiate a new connection to server
 			fmt.Println("Connection Lost with Server, retrying connection..")
@@ -359,18 +356,18 @@ func (c *Client) connectUpstream() error {
 	return nil
 }
 
-// getPeersViaTunnel query about peer client on the same channel via tunnel
-func getPeersViaTunnel(tunnel *transport.Tunnel, cid string) (peers []string, err error) {
+// getPeersViaTunnel query about peer client on the same channel via signalTunnel
+func getPeersViaTunnel(signalTunnel *transport.Tunnel, cid string) (peers []string, err error) {
 	data, err := transport.CreateDiscoverQuery(cid).Marshal()
 	if err != nil {
 		return
 	}
 
 	// Send the query
-	tunnel.Outgoing <- data
+	signalTunnel.Outgoing <- data
 
 	// Wait for the answer
-	data = <-tunnel.Incoming
+	data = <-signalTunnel.Incoming
 	message, err := transport.UnmarshalMessage(data)
 	if err != nil {
 		return
@@ -379,8 +376,8 @@ func getPeersViaTunnel(tunnel *transport.Tunnel, cid string) (peers []string, er
 	return
 }
 
-// exchangeOfferViaTunnel exchange the SDP offer and answer via tunnel.
-func exchangeOfferViaTunnel(src string, dest string, offer webrtc.SessionDescription, tunnel *transport.Tunnel) (answer webrtc.SessionDescription, err error) {
+// exchangeOfferViaTunnel exchange the SDP offer and answer via signalTunnel.
+func exchangeOfferViaTunnel(src string, dest string, offer webrtc.SessionDescription, signalTunnel *transport.Tunnel) (answer webrtc.SessionDescription, err error) {
 
 	data, err := transport.CreateOffer(src, dest, &offer).Marshal()
 	if err != nil {
@@ -388,10 +385,10 @@ func exchangeOfferViaTunnel(src string, dest string, offer webrtc.SessionDescrip
 	}
 
 	// Send the offer
-	tunnel.Outgoing <- data
+	signalTunnel.Outgoing <- data
 
 	// Wait for the answer
-	data = <-tunnel.Incoming
+	data = <-signalTunnel.Incoming
 	message, err := transport.UnmarshalMessage(data)
 	if err != nil {
 		return
@@ -400,15 +397,15 @@ func exchangeOfferViaTunnel(src string, dest string, offer webrtc.SessionDescrip
 	return
 }
 
-// exchangeAnswerViaTunnel exchange the SDP offer and answer via tunnel
-func exchangeAnswerViaTunnel(tunnel *transport.Tunnel) (
+// exchangeAnswerViaTunnel exchange the SDP offer and answer via signalTunnel
+func exchangeAnswerViaTunnel(signalTunnel *transport.Tunnel) (
 	offerOut chan webrtc.SessionDescription, answerIn chan webrtc.SessionDescription, err error) {
 
 	offerOut = make(chan webrtc.SessionDescription)
 	answerIn = make(chan webrtc.SessionDescription)
 
 	go func() {
-		data := <-tunnel.Incoming
+		data := <-signalTunnel.Incoming
 
 		message, err := transport.UnmarshalMessage(data)
 		if err != nil {
@@ -423,7 +420,7 @@ func exchangeAnswerViaTunnel(tunnel *transport.Tunnel) (
 			return
 		}
 
-		tunnel.Outgoing <- data
+		signalTunnel.Outgoing <- data
 	}()
 
 	return

@@ -248,7 +248,7 @@ func (router *Router) ServeTunnel(tunnel *Tunnel, handler RouteHandler) {
 					tunnel.Outgoing <- data
 
 				case message.TYP == SDP_DISCOVER_ANSWER:
-					log.Printf("Dropping Unexpected SDP_DISCOVER_ANSWER")
+					log.Printf("Dropping Unexpected DISCOVER_ANS")
 
 				default:
 					if message.DST == "" {

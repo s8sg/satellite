@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"github.com/rs/xid"
 	"os"
+	"os/signal"
 
 	client "github.com/s8sg/satellite/pkg/client"
 	server "github.com/s8sg/satellite/pkg/server"
+	transport "github.com/s8sg/satellite/pkg/transport"
 )
 
 var (
@@ -54,9 +57,10 @@ func main() {
 	case !args.Server:
 		// Client Mode
 		client := client.Client{
-			Remote: args.Remote,
-			Port:   args.Port,
-			ID:     xid.New().String(),
+			Remote:   args.Remote,
+			Port:     args.Port,
+			ID:       xid.New().String(),
+			IOTunnel: transport.GetTunnel(),
 		}
 		if args.Create {
 			err := client.CreateChannel()
@@ -72,7 +76,34 @@ func main() {
 		} else {
 			flag.Usage()
 		}
+		go func() {
+			for {
+				reader := bufio.NewReader(os.Stdin)
+				message, err := reader.ReadString('\n')
+				if err != nil {
+					panic(err)
+				}
+				// Send to Outgoing to broadcast
+				client.IOTunnel.Outgoing <- []byte(message)
+			}
+		}()
+
+		go func() {
+			for {
+				// Print incoming message
+				message := <-client.IOTunnel.Incoming
+				fmt.Println(string(message))
+			}
+		}()
+
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, os.Interrupt)
+
+		<-c
+		fmt.Println("Caught signal, stopping")
+
 	}
+
 }
 
 func PrintVersionInfo() {
