@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -19,13 +20,21 @@ import (
 var httpClient *http.Client
 
 type Client struct {
-	Remote       string            // Remote server that has the HRRP Server
-	Port         int               // Port from which UI will be served
-	ID           string            // Client Id
-	Channel      string            // Channel Id to join
+	Remote  string // Remote server that has the HRRP Server
+	Port    int    // Port from which UI will be served
+	ID      string // Client Id
+	Channel string // Channel Id to join
+
 	signalTunnel *transport.Tunnel // tunnel with the signal server
 
+	peerDiscoveryTunnel *transport.Tunnel // tunnel that serves discovery thread
+	answerTunnel        *transport.Tunnel // tunnel that serves answer thread
+	offerTunnel         *transport.Tunnel // tunnel that serves offer thread
+
 	IOTunnel *transport.Tunnel // Input/Output tunnel from user
+
+	peers    []string   // A set of peers
+	peerLock sync.Mutex // Sync peer read and write
 
 	/*
 		peers       map[string]*transport.Tunnel // tunnel for the peer connection
@@ -62,9 +71,95 @@ func (client *Client) CreateChannel() (err error) {
 
 	fmt.Printf("Join new channel with:\n\t -join=%s\n", client.Channel)
 
-	// Wait to answer offer from peer
-	err = client.answer()
-	return err
+	client.answerTunnel = transport.GetTunnel()
+	client.peerDiscoveryTunnel = transport.GetTunnel()
+	client.offerTunnel = transport.GetTunnel()
+
+	// Start answer routine
+	go func() {
+
+		for {
+			err = client.answer()
+			if err != nil {
+				log.Printf(err.Error())
+			}
+		}
+	}()
+
+	// Start peer discovery routine
+	go func() {
+
+		for range time.NewTicker(5 * time.Second).C {
+			client.peerLock.Lock()
+			peers, err := getPeersViaTunnel(client.peerDiscoveryTunnel, client.ID)
+			if err != nil {
+				log.Printf("failed to get peers, error %v", err)
+				client.peerLock.Unlock()
+				continue
+			}
+			client.peers = peers
+			client.peerLock.Unlock()
+		}
+	}()
+
+	// Start offer routine
+	go func() {
+
+		for range time.NewTicker(5 * time.Second).C {
+			client.peerLock.Lock()
+			for _, peer := range client.peers {
+				err = client.offer(peer)
+				if err != nil {
+					log.Printf("failed to connect peer %s, error %v",
+						peer, err)
+				}
+			}
+			client.peerLock.Unlock()
+		}
+	}()
+
+	// Start Multiplexer
+	go func() {
+		for {
+			select {
+			case data := <-client.answerTunnel.Outgoing:
+				client.signalTunnel.Outgoing <- data
+
+			case data := <-client.peerDiscoveryTunnel.Outgoing:
+				client.signalTunnel.Outgoing <- data
+
+			case data := <-client.offerTunnel.Outgoing:
+				client.signalTunnel.Outgoing <- data
+			}
+		}
+	}()
+
+	// Start DeMultiplexer
+	go func() {
+		for {
+			data := <-client.signalTunnel.Incoming
+			msg, err := transport.UnmarshalMessage(data)
+			if err != nil {
+				log.Printf("failed to decode message, error %v", err)
+				continue
+			}
+			switch msg.TYP {
+			case transport.SDP_OFFER:
+				client.answerTunnel.Incoming <- data
+
+			case transport.SDP_ANSWER:
+				client.offerTunnel.Incoming <- data
+
+			case transport.SDP_DISCOVER_ANSWER:
+				client.peerDiscoveryTunnel.Incoming <- data
+
+			default:
+				log.Printf("Invalid message type %s", msg.TYP)
+			}
+		}
+	}()
+
+	return nil
 }
 
 // JoinChannel join a existing channel via server
@@ -78,92 +173,170 @@ func (client *Client) JoinChannel() error {
 		return err
 	}
 
-	// Send offer to peer
-	err = client.offer()
-	return err
+	client.answerTunnel = transport.GetTunnel()
+	client.peerDiscoveryTunnel = transport.GetTunnel()
+	client.offerTunnel = transport.GetTunnel()
+
+	// Start answer routine
+	go func() {
+
+		for {
+			err = client.answer()
+			if err != nil {
+				log.Printf(err.Error())
+			}
+		}
+	}()
+
+	// Start peer discovery routine
+	go func() {
+
+		for range time.NewTicker(5 * time.Second).C {
+			//	client.peerLock.Lock()
+			peers, err := getPeersViaTunnel(client.peerDiscoveryTunnel, client.ID)
+			if err != nil {
+				log.Printf("failed to get peers, error %v", err)
+				client.peerLock.Unlock()
+				continue
+			}
+			client.peers = peers
+			//	client.peerLock.Unlock()
+		}
+	}()
+
+	// Start offer routine
+	go func() {
+
+		for range time.NewTicker(5 * time.Second).C {
+			for _, peer := range client.peers {
+				err = client.offer(peer)
+				if err != nil {
+					log.Printf("failed to connect peer %s, error %v",
+						peer, err)
+				}
+			}
+		}
+	}()
+
+	// Start Multiplexer
+	go func() {
+		for {
+			select {
+			case data := <-client.answerTunnel.Outgoing:
+				log.Printf("Data from answer tunnel send outward")
+				client.signalTunnel.Outgoing <- data
+
+			case data := <-client.peerDiscoveryTunnel.Outgoing:
+				log.Printf("Data from peer discovery tunnel send outward")
+				client.signalTunnel.Outgoing <- data
+
+			case data := <-client.offerTunnel.Outgoing:
+				log.Printf("Data from offer tunnel send outward")
+				client.signalTunnel.Outgoing <- data
+			}
+		}
+	}()
+
+	// Start DeMultiplexer
+	go func() {
+		for {
+			data := <-client.signalTunnel.Incoming
+			msg, err := transport.UnmarshalMessage(data)
+			if err != nil {
+				log.Printf("failed to decode message, error %v", err)
+				continue
+			}
+			switch msg.TYP {
+			case transport.SDP_OFFER:
+				client.answerTunnel.Incoming <- data
+
+			case transport.SDP_ANSWER:
+				client.offerTunnel.Incoming <- data
+
+			case transport.SDP_DISCOVER_ANSWER:
+				client.peerDiscoveryTunnel.Incoming <- data
+
+			default:
+				log.Printf("Invalid message type %s", msg.TYP)
+			}
+		}
+	}()
+
+	return nil
 }
 
 // offer a webrtc request to a peer via Server
-func (client *Client) offer() error {
-	// Discover peers via tunnel
-	peers, err := getPeersViaTunnel(client.signalTunnel, client.ID)
+func (client *Client) offer(peer string) error {
+	// Prepare the configuration
+	config := webrtc.Configuration{
+		ICEServers: []webrtc.ICEServer{
+			{
+				URLs: []string{"stun:stun.l.google.com:19302"},
+			},
+		},
+	}
+
+	// Create a new RTCPeerConnection
+	peerConnection, err := webrtc.NewPeerConnection(config)
 	if err != nil {
 		return err
 	}
 
-	for _, peer := range peers {
+	// Create a datachannel with label 'data'
+	dataChannel, err := peerConnection.CreateDataChannel(client.Channel, nil)
+	if err != nil {
+		return err
+	}
 
-		// Prepare the configuration
-		config := webrtc.Configuration{
-			ICEServers: []webrtc.ICEServer{
-				{
-					URLs: []string{"stun:stun.l.google.com:19302"},
-				},
-			},
-		}
+	// Set the handler for ICE connection state
+	// This will notify you when the peer has connected/disconnected
+	peerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
+		fmt.Printf("ICE Connection State has changed: %s\n", connectionState.String())
+	})
 
-		// Create a new RTCPeerConnection
-		peerConnection, err := webrtc.NewPeerConnection(config)
-		if err != nil {
-			return err
-		}
+	// Register channel opening handling
+	dataChannel.OnOpen(func() {
+		fmt.Printf("Data channel '%s'-'%d' open. Typed messages will now be sent to any connected DataChannels\n", dataChannel.Label, dataChannel.ID)
 
-		// Create a datachannel with label 'data'
-		dataChannel, err := peerConnection.CreateDataChannel(client.Channel, nil)
-		if err != nil {
-			return err
-		}
-
-		// Set the handler for ICE connection state
-		// This will notify you when the peer has connected/disconnected
-		peerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
-			fmt.Printf("ICE Connection State has changed: %s\n", connectionState.String())
-		})
-
-		// Register channel opening handling
-		dataChannel.OnOpen(func() {
-			fmt.Printf("Data channel '%s'-'%d' open. Typed messages will now be sent to any connected DataChannels\n", dataChannel.Label, dataChannel.ID)
-
-			for {
-				data := <-client.IOTunnel.Outgoing
-				message := string(data)
-				// Send the message as text
-				err := dataChannel.SendText(message[:len(message)-1])
-				if err != nil {
-					panic(err)
-				}
+		for {
+			data := <-client.IOTunnel.Outgoing
+			message := string(data)
+			// Send the message as text
+			err := dataChannel.SendText(message[:len(message)-1])
+			if err != nil {
+				panic(err)
 			}
-		})
-
-		// Register text message handling
-		dataChannel.OnMessage(func(msg webrtc.DataChannelMessage) {
-			client.IOTunnel.Incoming <- msg.Data
-			//fmt.Printf("Message from '%s': '%s'\n", dataChannel.Label, string(msg.Data))
-		})
-
-		// Create an offer to send to the browser
-		offer, err := peerConnection.CreateOffer(nil)
-		if err != nil {
-			return err
 		}
+	})
 
-		// Sets the LocalDescription, and starts our UDP listeners
-		err = peerConnection.SetLocalDescription(offer)
-		if err != nil {
-			return err
-		}
+	// Register text message handling
+	dataChannel.OnMessage(func(msg webrtc.DataChannelMessage) {
+		client.IOTunnel.Incoming <- msg.Data
+		//fmt.Printf("Message from '%s': '%s'\n", dataChannel.Label, string(msg.Data))
+	})
 
-		// Exchange the offer for the answer
-		answer, err := exchangeOfferViaTunnel(client.ID, peer, offer, client.signalTunnel)
-		if err != nil {
-			return err
-		}
+	// Create an offer to send to the browser
+	offer, err := peerConnection.CreateOffer(nil)
+	if err != nil {
+		return err
+	}
 
-		// Apply the answer as the remote description
-		err = peerConnection.SetRemoteDescription(answer)
-		if err != nil {
-			return err
-		}
+	// Sets the LocalDescription, and starts our UDP listeners
+	err = peerConnection.SetLocalDescription(offer)
+	if err != nil {
+		return err
+	}
+
+	// Exchange the offer for the answer
+	answer, err := exchangeOfferViaTunnel(client.ID, peer, offer, client.signalTunnel)
+	if err != nil {
+		return err
+	}
+
+	// Apply the answer as the remote description
+	err = peerConnection.SetRemoteDescription(answer)
+	if err != nil {
+		return err
 	}
 
 	return nil
@@ -219,7 +392,7 @@ func (client *Client) answer() error {
 	})
 
 	// Exchange the offer/answer via HTTP
-	offerChan, answerChan, err := exchangeAnswerViaTunnel(client.signalTunnel)
+	offerChan, answerChan, err := exchangeAnswerViaTunnel(client.answerTunnel)
 	if err != nil {
 		return err
 	}
@@ -357,17 +530,17 @@ func (c *Client) connectUpstream() error {
 }
 
 // getPeersViaTunnel query about peer client on the same channel via signalTunnel
-func getPeersViaTunnel(signalTunnel *transport.Tunnel, cid string) (peers []string, err error) {
+func getPeersViaTunnel(peerTunnel *transport.Tunnel, cid string) (peers []string, err error) {
 	data, err := transport.CreateDiscoverQuery(cid).Marshal()
 	if err != nil {
 		return
 	}
 
 	// Send the query
-	signalTunnel.Outgoing <- data
+	peerTunnel.Outgoing <- data
 
 	// Wait for the answer
-	data = <-signalTunnel.Incoming
+	data = <-peerTunnel.Incoming
 	message, err := transport.UnmarshalMessage(data)
 	if err != nil {
 		return
@@ -377,40 +550,47 @@ func getPeersViaTunnel(signalTunnel *transport.Tunnel, cid string) (peers []stri
 }
 
 // exchangeOfferViaTunnel exchange the SDP offer and answer via signalTunnel.
-func exchangeOfferViaTunnel(src string, dest string, offer webrtc.SessionDescription, signalTunnel *transport.Tunnel) (answer webrtc.SessionDescription, err error) {
+func exchangeOfferViaTunnel(src string, dest string, offer webrtc.SessionDescription, offerTunnel *transport.Tunnel) (answer webrtc.SessionDescription, err error) {
 
 	data, err := transport.CreateOffer(src, dest, &offer).Marshal()
 	if err != nil {
 		return
 	}
 
+	log.Printf("Sending offer for %s", dest)
+
 	// Send the offer
-	signalTunnel.Outgoing <- data
+	offerTunnel.Outgoing <- data
+
+	log.Printf("Waiting for answer from %s", dest)
 
 	// Wait for the answer
-	data = <-signalTunnel.Incoming
+	data = <-offerTunnel.Incoming
 	message, err := transport.UnmarshalMessage(data)
 	if err != nil {
 		return
 	}
+	fmt.Println(message)
 	answer = *message.SDP
 	return
 }
 
 // exchangeAnswerViaTunnel exchange the SDP offer and answer via signalTunnel
-func exchangeAnswerViaTunnel(signalTunnel *transport.Tunnel) (
+func exchangeAnswerViaTunnel(answerTunnel *transport.Tunnel) (
 	offerOut chan webrtc.SessionDescription, answerIn chan webrtc.SessionDescription, err error) {
 
 	offerOut = make(chan webrtc.SessionDescription)
 	answerIn = make(chan webrtc.SessionDescription)
 
 	go func() {
-		data := <-signalTunnel.Incoming
+		data := <-answerTunnel.Incoming
 
 		message, err := transport.UnmarshalMessage(data)
 		if err != nil {
 			return
 		}
+
+		log.Printf("Got offer from %s", message.SRC)
 
 		offerOut <- *message.SDP
 		answer := <-answerIn
@@ -420,7 +600,9 @@ func exchangeAnswerViaTunnel(signalTunnel *transport.Tunnel) (
 			return
 		}
 
-		signalTunnel.Outgoing <- data
+		log.Printf("Got offer sending answer to %s", message.SRC)
+
+		answerTunnel.Outgoing <- data
 	}()
 
 	return
