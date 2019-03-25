@@ -14,15 +14,12 @@ type Message struct {
 	SRC string                     `json:"src, omitempty"` // Source (Name)
 	DST string                     `json:"dst, omitempty"` // Dest (Name)
 	SDP *webrtc.SessionDescription `json:"msg, omitempty"` // SIGNAL (SDP Msg)
-	ANS []string                   `json:"ans, omitempty"` // Discover Answer
 }
 
 // Message types
 const (
-	SDP_OFFER           = "OFFER"        // SDP offer signal
-	SDP_ANSWER          = "ANSWER"       // SDP answer signal
-	SDP_DISCOVER_QUERY  = "DISCOVER_QRY" // SDP discover query
-	SDP_DISCOVER_ANSWER = "DISCOVER_ANS" // SDP discover ans
+	SDP_OFFER  = "OFFER"  // SDP offer signal
+	SDP_ANSWER = "ANSWER" // SDP answer signal
 )
 
 // CreateOffer create a message wrapping a offer signal
@@ -32,7 +29,6 @@ func CreateOffer(src string, dest string, offer *webrtc.SessionDescription) *Mes
 		SRC: src,
 		DST: dest,
 		SDP: offer,
-		ANS: nil,
 	}
 	return msg
 }
@@ -44,31 +40,6 @@ func CreateAnswer(src string, dest string, answer *webrtc.SessionDescription) *M
 		SRC: src,
 		DST: dest,
 		SDP: answer,
-		ANS: nil,
-	}
-	return msg
-}
-
-// CreateDiscoverQuery create a message wrapping a discover query
-func CreateDiscoverQuery(src string) *Message {
-	msg := &Message{
-		TYP: SDP_DISCOVER_QUERY,
-		SRC: src,
-		DST: "",
-		SDP: nil,
-		ANS: nil,
-	}
-	return msg
-}
-
-// CreateDiscoverAnswer create a message wrapping a discover answer
-func CreateDiscoverAnswer(clients []string, dest string) *Message {
-	msg := &Message{
-		TYP: SDP_DISCOVER_ANSWER,
-		SRC: "",
-		DST: dest,
-		ANS: clients,
-		SDP: nil,
 	}
 	return msg
 }
@@ -235,27 +206,12 @@ func (router *Router) ServeTunnel(tunnel *Tunnel, handler RouteHandler) {
 					log.Printf("Error while handling message, %v\n", err)
 					continue
 				}
-				switch {
-
-				case message.TYP == SDP_DISCOVER_QUERY:
-
-					log.Printf("handling peer discovery query")
-
-					// handle discover query
+				if message.DST == "" {
 					clients := router.RetriveActiveClients(message.SRC)
-					discoverAnswer := CreateDiscoverAnswer(clients, message.SRC)
-					data, _ := discoverAnswer.Marshal()
-					tunnel.Outgoing <- data
-
-				case message.TYP == SDP_DISCOVER_ANSWER:
-					log.Printf("Dropping Unexpected DISCOVER_ANS")
-
-				default:
-					if message.DST == "" {
-						log.Printf("Destination is not mentioned in SDP")
-					}
-					handler(message, tunnel, router)
+					message.DST = clients[0]
+					log.Printf("Destination is not mentioned in SDP")
 				}
+				handler(message, tunnel, router)
 			case <-router.RouterDone:
 				close(tunnel.tunnelDone)
 				return
