@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
+	"github.com/rs/xid"
 	"os"
+	"os/signal"
 
 	client "github.com/s8sg/satellite/pkg/client"
 	server "github.com/s8sg/satellite/pkg/server"
+	transport "github.com/s8sg/satellite/pkg/transport"
 )
 
 var (
@@ -17,6 +21,7 @@ var (
 // Argument passed from the command-line
 type Args struct {
 	Port    int
+	UIPort  int
 	Server  bool
 	Remote  string
 	Version bool
@@ -27,7 +32,7 @@ type Args struct {
 func main() {
 	args := Args{}
 	flag.BoolVar(&args.Version, "version", false, "print version information and exit")
-	flag.IntVar(&args.Port, "port", 8000, "port for server")
+	flag.IntVar(&args.Port, "port", 8000, "port for server or client's ui")
 	flag.BoolVar(&args.Server, "server", true, "server or client")
 	flag.BoolVar(&args.Create, "create", false, "create new channel")
 	flag.StringVar(&args.Join, "join", "", "channel id")
@@ -52,7 +57,10 @@ func main() {
 	case !args.Server:
 		// Client Mode
 		client := client.Client{
-			Remote: args.Remote,
+			Remote:   args.Remote,
+			Port:     args.Port,
+			ID:       xid.New().String(),
+			IOTunnel: transport.GetTunnel(),
 		}
 		if args.Create {
 			err := client.CreateChannel()
@@ -60,7 +68,7 @@ func main() {
 				panic(err)
 			}
 		} else if args.Join != "" {
-			client.ID = args.Join
+			client.Channel = args.Join
 			err := client.JoinChannel()
 			if err != nil {
 				panic(err)
@@ -68,7 +76,34 @@ func main() {
 		} else {
 			flag.Usage()
 		}
+		go func() {
+			for {
+				reader := bufio.NewReader(os.Stdin)
+				message, err := reader.ReadString('\n')
+				if err != nil {
+					panic(err)
+				}
+				// Send to Outgoing to broadcast
+				client.IOTunnel.Outgoing <- []byte(message)
+			}
+		}()
+
+		go func() {
+			for {
+				// Print incoming message
+				message := <-client.IOTunnel.Incoming
+				fmt.Println(string(message))
+			}
+		}()
+
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, os.Interrupt)
+
+		<-c
+		fmt.Println("Caught signal, stopping")
+
 	}
+
 }
 
 func PrintVersionInfo() {

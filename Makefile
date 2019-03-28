@@ -7,7 +7,7 @@ all: clean build
 build:
 	go build .
 	mkdir bin
-	cp satellite ./bin/
+	mv satellite ./bin/
 
 .PHONY: build_docker
 build_docker:
