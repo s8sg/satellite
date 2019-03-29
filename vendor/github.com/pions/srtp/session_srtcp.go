@@ -51,7 +51,7 @@ func (s *SessionSRTCP) OpenWriteStream() (*WriteStreamSRTCP, error) {
 // OpenReadStream opens a read stream for the given SSRC, it can be used
 // if you want a certain SSRC, but don't want to wait for AcceptStream
 func (s *SessionSRTCP) OpenReadStream(SSRC uint32) (*ReadStreamSRTCP, error) {
-	r, _ := s.session.getOrCreateReadStream(SSRC, s, &ReadStreamSRTCP{})
+	r, _ := s.session.getOrCreateReadStream(SSRC, s, newReadStreamSRTCP)
 
 	if readStream, ok := r.(*ReadStreamSRTCP); ok {
 		return readStream, nil
@@ -97,14 +97,15 @@ func (s *SessionSRTCP) write(buf []byte) (int, error) {
 }
 
 func (s *SessionSRTCP) decrypt(buf []byte) error {
-	decrypted, err := s.remoteContext.DecryptRTCP(nil, buf, nil)
+	decrypted, err := s.remoteContext.DecryptRTCP(buf, buf, nil)
 	if err != nil {
 		return err
 	}
 
-	compoundPacket := rtcp.NewReader(bytes.NewReader(decrypted))
+	compoundPacket := rtcp.NewDecoder(bytes.NewReader(decrypted))
 	for {
-		_, rawrtcp, err := compoundPacket.ReadPacket()
+
+		report, err := compoundPacket.DecodePacket()
 		if err != nil {
 			if err == io.EOF {
 				return nil
@@ -112,14 +113,8 @@ func (s *SessionSRTCP) decrypt(buf []byte) error {
 			return err
 		}
 
-		var report rtcp.Packet
-		report, _, err = rtcp.Unmarshal(rawrtcp)
-		if err != nil {
-			return err
-		}
-
 		for _, ssrc := range report.DestinationSSRC() {
-			r, isNew := s.session.getOrCreateReadStream(ssrc, s, &ReadStreamSRTCP{})
+			r, isNew := s.session.getOrCreateReadStream(ssrc, s, newReadStreamSRTCP)
 			if r == nil {
 				return nil // Session has been closed
 			} else if isNew {
@@ -131,21 +126,9 @@ func (s *SessionSRTCP) decrypt(buf []byte) error {
 				return fmt.Errorf("failed to get/create ReadStreamSRTP")
 			}
 
-			// Ensure that readStream.Close() isn't called while in flight
-			readStream.mu.Lock()
-			defer readStream.mu.Unlock()
-
-			readBuf := <-readStream.readCh
-			if len(readBuf) < len(decrypted) {
-				return fmt.Errorf("input buffer was not long enough to contain decrypted RTCP")
-			}
-
-			copy(readBuf, decrypted)
-			h := report.Header()
-
-			readStream.readRetCh <- readResultSRTCP{
-				len:    len(decrypted),
-				header: &h,
+			_, err = readStream.write(decrypted)
+			if err != nil {
+				return err
 			}
 		}
 	}

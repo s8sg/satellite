@@ -1,9 +1,11 @@
+// +build !js
+
 package webrtc
 
 import (
 	"time"
 
-	"github.com/pions/webrtc/internal/ice"
+	"github.com/pions/ice"
 )
 
 // SettingEngine allows influencing behavior in ways that are not
@@ -20,6 +22,9 @@ type SettingEngine struct {
 	timeout struct {
 		ICEConnection *time.Duration
 		ICEKeepalive  *time.Duration
+	}
+	candidates struct {
+		ICENetworkTypes []NetworkType
 	}
 }
 
@@ -48,4 +53,10 @@ func (e *SettingEngine) SetEphemeralUDPPortRange(portMin, portMax uint16) error 
 	e.ephemeralUDP.PortMin = portMin
 	e.ephemeralUDP.PortMax = portMax
 	return nil
+}
+
+// SetNetworkTypes configures what types of candidate networks are supported
+// during local and server reflexive gathering.
+func (e *SettingEngine) SetNetworkTypes(candidateTypes []NetworkType) {
+	e.candidates.ICENetworkTypes = candidateTypes
 }

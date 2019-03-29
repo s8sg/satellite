@@ -1,3 +1,5 @@
+// +build !js
+
 package webrtc
 
 import (
@@ -5,12 +7,14 @@ import (
 	"sync"
 
 	"github.com/pions/rtcp"
+	"github.com/pions/rtp"
+	"github.com/pions/srtp"
 )
 
 // RTPSender allows an application to control how a given Track is encoded and transmitted to a remote peer
 type RTPSender struct {
 	track          *Track
-	rtcpReadStream *lossyReadCloser
+	rtcpReadStream *srtp.ReadStreamSRTCP
 
 	transport *DTLSTransport
 
@@ -56,21 +60,20 @@ func (r *RTPSender) Transport() *DTLSTransport {
 func (r *RTPSender) Send(parameters RTPSendParameters) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	select {
-	case <-r.sendCalled:
+
+	if r.hasSent() {
 		return fmt.Errorf("Send has already been called")
-	default:
 	}
 
 	srtcpSession, err := r.transport.getSRTCPSession()
 	if err != nil {
 		return err
 	}
-	srtcpReadStream, err := srtcpSession.OpenReadStream(parameters.Encodings.SSRC)
+
+	r.rtcpReadStream, err = srtcpSession.OpenReadStream(parameters.Encodings.SSRC)
 	if err != nil {
 		return err
 	}
-	r.rtcpReadStream = newLossyReadCloser(srtcpReadStream)
 
 	r.track.mu.Lock()
 	r.track.senders = append(r.track.senders, r)
@@ -101,10 +104,8 @@ func (r *RTPSender) Stop() error {
 	}
 	r.track.senders = filtered
 
-	select {
-	case <-r.sendCalled:
+	if r.hasSent() {
 		return r.rtcpReadStream.Close()
-	default:
 	}
 
 	close(r.stopCalled)
@@ -122,19 +123,18 @@ func (r *RTPSender) Read(b []byte) (n int, err error) {
 }
 
 // ReadRTCP is a convenience method that wraps Read and unmarshals for you
-func (r *RTPSender) ReadRTCP() (rtcp.Packet, error) {
+func (r *RTPSender) ReadRTCP() (rtcp.CompoundPacket, error) {
 	b := make([]byte, receiveMTU)
 	i, err := r.Read(b)
 	if err != nil {
 		return nil, err
 	}
 
-	pkt, _, err := rtcp.Unmarshal(b[:i])
-	return pkt, err
+	return rtcp.Unmarshal(b[:i])
 }
 
 // sendRTP should only be called by a track, this only exists so we can keep state in one place
-func (r *RTPSender) sendRTP(b []byte) (int, error) {
+func (r *RTPSender) sendRTP(header *rtp.Header, payload []byte) (int, error) {
 	select {
 	case <-r.stopCalled:
 		return 0, fmt.Errorf("RTPSender has been stopped")
@@ -149,6 +149,16 @@ func (r *RTPSender) sendRTP(b []byte) (int, error) {
 			return 0, err
 		}
 
-		return writeStream.Write(b)
+		return writeStream.WriteRTP(header, payload)
+	}
+}
+
+// hasSent tells if data has been ever sent for this instance
+func (r *RTPSender) hasSent() bool {
+	select {
+	case <-r.sendCalled:
+		return true
+	default:
+		return false
 	}
 }

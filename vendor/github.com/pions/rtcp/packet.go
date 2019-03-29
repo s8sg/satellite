@@ -10,53 +10,97 @@ type Packet interface {
 	Unmarshal(rawPacket []byte) error
 }
 
-// Unmarshal is a factory a polymorphic RTCP packet, and its header,
-func Unmarshal(rawPacket []byte) (Packet, Header, error) {
-	var h Header
-	var p Packet
+// CompoundPacket is a slice of packets. It's defined so that we can create members that use it as a receiver.
+type CompoundPacket []Packet
 
-	err := h.Unmarshal(rawPacket)
+// unmarshal is a factory which pulls the first RTCP packet from a bytestream,
+// and returns it's parsed representation, and the amount of data that was processed.
+func unmarshal(rawData []byte) (packet Packet, bytesprocessed int, err error) {
+	var h Header
+
+	err = h.Unmarshal(rawData)
 	if err != nil {
-		return nil, h, err
+		return nil, 0, err
 	}
+
+	bytesprocessed = int(h.Length+1) * 4
+	inPacket := rawData[:bytesprocessed]
 
 	switch h.Type {
 	case TypeSenderReport:
-		p = new(SenderReport)
+		packet = new(SenderReport)
 
 	case TypeReceiverReport:
-		p = new(ReceiverReport)
+		packet = new(ReceiverReport)
 
 	case TypeSourceDescription:
-		p = new(SourceDescription)
+		packet = new(SourceDescription)
 
 	case TypeGoodbye:
-		p = new(Goodbye)
+		packet = new(Goodbye)
 
 	case TypeTransportSpecificFeedback:
 		switch h.Count {
 		case FormatTLN:
-			p = new(TransportLayerNack)
+			packet = new(TransportLayerNack)
 		case FormatRRR:
-			p = new(RapidResynchronizationRequest)
+			packet = new(RapidResynchronizationRequest)
 		default:
-			p = new(RawPacket)
+			packet = new(RawPacket)
 		}
 
 	case TypePayloadSpecificFeedback:
 		switch h.Count {
 		case FormatPLI:
-			p = new(PictureLossIndication)
+			packet = new(PictureLossIndication)
 		case FormatSLI:
-			p = new(SliceLossIndication)
+			packet = new(SliceLossIndication)
+		case FormatREMB:
+			packet = new(ReceiverEstimatedMaximumBitrate)
 		default:
-			p = new(RawPacket)
+			packet = new(RawPacket)
 		}
 
 	default:
-		p = new(RawPacket)
+		packet = new(RawPacket)
 	}
 
-	err = p.Unmarshal(rawPacket)
-	return p, h, err
+	err = packet.Unmarshal(inPacket)
+
+	return packet, bytesprocessed, err
+}
+
+// Unmarshal takes an entire udp datagram (which may consist of multiple RTCP packets) and returns
+// an unmarshalled array of packets.
+func Unmarshal(rawData []byte) (CompoundPacket, error) {
+	var out CompoundPacket
+
+	for len(rawData) != 0 {
+		p, processed, err := unmarshal(rawData)
+
+		if err != nil {
+			return nil, err
+		}
+
+		out = append(out, p)
+		rawData = rawData[processed:]
+	}
+
+	var err error
+
+	//some extra validity checks for compound packets
+	//(if they fail, return the (now successfully parsed) packets, but an error too)
+	if len(out) > 1 {
+		if out[0].Header().Padding {
+			//padding isn't allowed in the first packet in a compound datagram
+			err = errInvalidHeader
+		} else if (out[0].Header().Type != TypeSenderReport) &&
+			(out[0].Header().Type != TypeReceiverReport) {
+			//SenderReport and ReceiverReport are the only types that
+			//are allowed to be the first packet in a compound datagram
+			err = errInvalidHeader
+		}
+	}
+
+	return out, err
 }

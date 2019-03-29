@@ -2,7 +2,6 @@ package rtcp
 
 import (
 	"bytes"
-	"io"
 	"reflect"
 	"testing"
 
@@ -72,18 +71,22 @@ var realPacket = []byte{
 }
 
 func TestUnmarshal(t *testing.T) {
-	r := NewReader(bytes.NewReader(realPacket))
+	decoder := NewDecoder(bytes.NewReader(realPacket))
+	packets, err := Unmarshal(realPacket)
+
+	if err != nil {
+		t.Fatalf("Error unmarshalling packets: %s", err)
+	}
+
+	if len(packets) != 5 {
+		t.Fatalf("Read the wrong number of packets from input array")
+	}
 
 	// ReceiverReport
-	_, packet, err := r.ReadPacket()
-	if err != nil {
-		t.Fatalf("Read rr: %v", err)
-	}
-	var parsed Packet
-	if parsed, _, err = Unmarshal(packet); err != nil {
-		t.Errorf("Unmarshal parsed: %v", err)
-	}
-	assert.IsType(t, parsed, (*ReceiverReport)(nil), "Unmarshalled to incorrect type")
+	packet := packets[0]
+	decoded, err := decoder.DecodePacket()
+	assert.NoError(t, err)
+	assert.IsType(t, packet, (*ReceiverReport)(nil), "Unmarshalled to incorrect type")
 
 	wantRR := &ReceiverReport{
 		SSRC: 0x902f9e2e,
@@ -98,20 +101,18 @@ func TestUnmarshal(t *testing.T) {
 		}},
 		ProfileExtensions: []byte{},
 	}
-	if got, want := wantRR, parsed; !reflect.DeepEqual(got, want) {
+	if want, got := wantRR, packet; !reflect.DeepEqual(got, want) {
+		t.Errorf("Unmarshal rr: got %#v, want %#v", got, want)
+	}
+	if want, got := wantRR, decoded; !reflect.DeepEqual(got, want) {
 		t.Errorf("Unmarshal rr: got %#v, want %#v", got, want)
 	}
 
 	// SourceDescription
-	_, packet, err = r.ReadPacket()
-	if err != nil {
-		t.Fatalf("Read sdes: %v", err)
-	}
-
-	if parsed, _, err = Unmarshal(packet); err != nil {
-		t.Errorf("Unmarshal parsed: %v", err)
-	}
-	assert.IsType(t, parsed, (*SourceDescription)(nil), "Unmarshalled to incorrect type")
+	packet = packets[1]
+	decoded, err = decoder.DecodePacket()
+	assert.NoError(t, err)
+	assert.IsType(t, packet, (*SourceDescription)(nil), "Unmarshalled to incorrect type")
 
 	wantSdes := &SourceDescription{
 		Chunks: []SourceDescriptionChunk{
@@ -127,66 +128,60 @@ func TestUnmarshal(t *testing.T) {
 		},
 	}
 
-	if got, want := parsed, wantSdes; !reflect.DeepEqual(got, want) {
+	if got, want := packet, wantSdes; !reflect.DeepEqual(got, want) {
+		t.Errorf("Unmarshal sdes: got %#v, want %#v", got, want)
+	}
+	if got, want := decoded, wantSdes; !reflect.DeepEqual(got, want) {
 		t.Errorf("Unmarshal sdes: got %#v, want %#v", got, want)
 	}
 
 	// Goodbye
-	_, packet, err = r.ReadPacket()
-	if err != nil {
-		t.Fatalf("Read bye: %v", err)
-	}
-
-	if parsed, _, err = Unmarshal(packet); err != nil {
-		t.Errorf("Unmarshal parsed: %v", err)
-	}
-
-	assert.IsType(t, parsed, (*Goodbye)(nil), "Unmarshalled to incorrect type")
+	packet = packets[2]
+	decoded, err = decoder.DecodePacket()
+	assert.NoError(t, err)
+	assert.IsType(t, packet, (*Goodbye)(nil), "Unmarshalled to incorrect type")
 
 	wantBye := &Goodbye{
 		Sources: []uint32{0x902f9e2e},
 	}
-	if got, want := parsed, wantBye; !reflect.DeepEqual(got, want) {
+	if got, want := packet, wantBye; !reflect.DeepEqual(got, want) {
+		t.Errorf("Unmarshal bye: got %#v, want %#v", got, want)
+	}
+	if got, want := decoded, wantBye; !reflect.DeepEqual(got, want) {
 		t.Errorf("Unmarshal bye: got %#v, want %#v", got, want)
 	}
 
 	// PictureLossIndication
-	_, packet, err = r.ReadPacket()
-	if err != nil {
-		t.Fatalf("Read pli: %v", err)
-	}
-
-	if parsed, _, err = Unmarshal(packet); err != nil {
-		t.Errorf("Unmarshal parsed: %v", err)
-	}
-
-	assert.IsType(t, parsed, (*PictureLossIndication)(nil), "Unmarshalled to incorrect type")
+	packet = packets[3]
+	decoded, err = decoder.DecodePacket()
+	assert.NoError(t, err)
+	assert.IsType(t, packet, (*PictureLossIndication)(nil), "Unmarshalled to incorrect type")
 
 	wantPli := &PictureLossIndication{
 		SenderSSRC: 0x902f9e2e,
 		MediaSSRC:  0x902f9e2e,
 	}
-	if got, want := parsed, wantPli; !reflect.DeepEqual(got, want) {
+	if got, want := packet, wantPli; !reflect.DeepEqual(got, want) {
+		t.Errorf("Unmarshal pli: got %#v, want %#v", got, want)
+	}
+	if got, want := decoded, wantPli; !reflect.DeepEqual(got, want) {
 		t.Errorf("Unmarshal pli: got %#v, want %#v", got, want)
 	}
 
 	// RapidResynchronizationRequest
-	_, packet, err = r.ReadPacket()
-	if err != nil {
-		t.Fatalf("Read rrr: %v", err)
-	}
-
-	if parsed, _, err = Unmarshal(packet); err != nil {
-		t.Errorf("Unmarshal parsed: %v", err)
-	}
-
-	assert.IsType(t, parsed, (*RapidResynchronizationRequest)(nil), "Unmarshalled to incorrect type")
+	packet = packets[4]
+	decoded, err = decoder.DecodePacket()
+	assert.NoError(t, err)
+	assert.IsType(t, packet, (*RapidResynchronizationRequest)(nil), "Unmarshalled to incorrect type")
 
 	wantRrr := &RapidResynchronizationRequest{
 		SenderSSRC: 0x902f9e2e,
 		MediaSSRC:  0x902f9e2e,
 	}
-	if got, want := parsed, wantRrr; !reflect.DeepEqual(got, want) {
+	if got, want := packet, wantRrr; !reflect.DeepEqual(got, want) {
+		t.Errorf("Unmarshal rrr: got %#v, want %#v", got, want)
+	}
+	if got, want := decoded, wantRrr; !reflect.DeepEqual(got, want) {
 		t.Errorf("Unmarshal rrr: got %#v, want %#v", got, want)
 	}
 }
@@ -196,9 +191,29 @@ func TestReadEOF(t *testing.T) {
 		0x81, 0xc9, // missing type & len
 	}
 
-	r := NewReader(bytes.NewReader(shortHeader))
-	_, _, err := r.ReadPacket()
-	if got, want := err, io.ErrUnexpectedEOF; got != want {
-		t.Fatalf("read short header: got err = %v, want %v", got, want)
-	}
+	_, err := Unmarshal(shortHeader)
+	assert.Error(t, err)
+
+	d := NewDecoder(bytes.NewReader(shortHeader))
+	_, err = d.DecodePacket()
+
+	assert.Error(t, err)
+}
+
+func TestBadCompound(t *testing.T) {
+	//trailing data!
+	badcompound := realPacket[:34]
+	packets, err := Unmarshal(badcompound)
+	assert.Error(t, err)
+
+	assert.Nil(t, packets)
+
+	//illegal start -- this should return an error, but also 2 parsed packets
+	//it violates the "must start with RR or SR" rule
+	badcompound = realPacket[84:104]
+	packets, err = Unmarshal(badcompound)
+	assert.Error(t, err)
+	assert.Equal(t, len(packets), 2)
+	assert.Equal(t, packets[0].Header().Type, TypeGoodbye)
+	assert.Equal(t, packets[1].Header().Type, TypePayloadSpecificFeedback)
 }

@@ -1,10 +1,12 @@
+// +build !js
+
 package webrtc
 
 import (
 	"errors"
 	"sync"
 
-	"github.com/pions/webrtc/internal/ice"
+	"github.com/pions/ice"
 )
 
 // The ICEGatherer gathers local host, server reflexive and relay
@@ -26,7 +28,7 @@ type ICEGatherer struct {
 // This constructor is part of the ORTC API. It is not
 // meant to be used together with the basic WebRTC API.
 func (api *API) NewICEGatherer(opts ICEGatherOptions) (*ICEGatherer, error) {
-	validatedServers := []*ice.URL{}
+	var validatedServers []*ice.URL
 	if len(opts.ICEServers) > 0 {
 		for _, server := range opts.ICEServers {
 			url, err := server.validate()
@@ -62,6 +64,15 @@ func (g *ICEGatherer) Gather() error {
 		PortMax:           g.api.settingEngine.ephemeralUDP.PortMax,
 		ConnectionTimeout: g.api.settingEngine.timeout.ICEConnection,
 		KeepaliveInterval: g.api.settingEngine.timeout.ICEKeepalive,
+	}
+
+	requestedNetworkTypes := g.api.settingEngine.candidates.ICENetworkTypes
+	if len(requestedNetworkTypes) == 0 {
+		requestedNetworkTypes = supportedNetworkTypes
+	}
+
+	for _, typ := range requestedNetworkTypes {
+		config.NetworkTypes = append(config.NetworkTypes, ice.NetworkType(typ))
 	}
 
 	agent, err := ice.NewAgent(config)

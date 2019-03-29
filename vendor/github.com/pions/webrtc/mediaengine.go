@@ -1,3 +1,5 @@
+// +build !js
+
 package webrtc
 
 import (
@@ -5,7 +7,7 @@ import (
 
 	"github.com/pions/rtp"
 	"github.com/pions/rtp/codecs"
-	"github.com/pions/sdp/v2"
+	"github.com/pions/sdp"
 )
 
 // PayloadTypes for the default codecs
@@ -197,10 +199,11 @@ func NewRTPCodec(
 
 // RTPCodecCapability provides information about codec capabilities.
 type RTPCodecCapability struct {
-	MimeType    string
-	ClockRate   uint32
-	Channels    uint16
-	SDPFmtpLine string
+	MimeType     string
+	ClockRate    uint32
+	Channels     uint16
+	SDPFmtpLine  string
+	RTCPFeedback []RTCPFeedback
 }
 
 // RTPHeaderExtensionCapability is used to define a RFC5285 RTP header extension supported by the codec.

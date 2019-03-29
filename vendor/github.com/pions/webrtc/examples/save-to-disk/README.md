@@ -8,7 +8,7 @@ go get github.com/pions/webrtc/examples/save-to-disk
 ```
 
 ### Open save-to-disk example page
-[jsfiddle.net](https://jsfiddle.net/dyj8qpek/19/) you should see your Webcam, two text-areas and a 'Start Session' button
+[jsfiddle.net](https://jsfiddle.net/b3d72av1/) you should see your Webcam, two text-areas and a 'Start Session' button
 
 ### Run save-to-disk, with your browsers SessionDescription as stdin
 In the jsfiddle the top textarea is your browser, copy that and:
@@ -21,7 +21,8 @@ Run `echo $BROWSER_SDP | save-to-disk`
 ### Input save-to-disk's SessionDescription into your browser
 Copy the text that `save-to-disk` just emitted and copy into second text area
 
-### Hit 'Start Session' in jsfiddle, enjoy your video!
+### Hit 'Start Session' in jsfiddle, wait, close jsfiddle, enjoy your video!
 In the folder you ran `save-to-disk` you should now have a file `output-1.ivf` play with your video player of choice!
+> Note: In order to correctly create the files, the remote client (JSFiddle) should be closed. The Go example will automatically close itself.
 
 Congrats, you have used pion-WebRTC! Now start building something cool

@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://pion.ly"><img src="https://img.shields.io/badge/pion-srtp-gray.svg?longCache=true&colorB=brightgreen" alt="Pion SRTP"></a>
   <a href="https://sourcegraph.com/github.com/pions/srtp?badge"><img src="https://sourcegraph.com/github.com/pions/srtp/-/badge.svg" alt="Sourcegraph Widget"></a>
-  <a href="http://gophers.slack.com/messages/pion"><img src="https://img.shields.io/badge/join-us%20on%20slack-gray.svg?longCache=true&logo=slack&colorB=brightgreen" alt="Slack Widget"></a>
+  <a href="https://pion.ly/slack"><img src="https://img.shields.io/badge/join-us%20on%20slack-gray.svg?longCache=true&logo=slack&colorB=brightgreen" alt="Slack Widget"></a>
   <a href="https://waffle.io/pions/webrtc"><img src="https://img.shields.io/badge/pm-waffle-gray.svg?longCache=true&colorB=brightgreen" alt="Waffle board"></a>
   <br>
   <a href="https://travis-ci.org/pions/srtp"><img src="https://travis-ci.org/pions/srtp.svg?branch=master" alt="Build Status"></a>
@@ -39,6 +39,7 @@ Check out the **[contributing wiki](https://github.com/pions/webrtc/wiki/Contrib
 * [chenkaiC4](https://github.com/chenkaiC4) - *Fix GolangCI Linter*
 * [Luke Curley](https://github.com/kixelated) - *Performance*
 * [Chris Hiszpanski](https://github.com/thinkski) - *Fix out-of-bounds access*
+* [Yutaka Takeda](https://github.com/enobufs) - *Fix log messages*
 
 ### License
 MIT License - see [LICENSE](LICENSE) for full text

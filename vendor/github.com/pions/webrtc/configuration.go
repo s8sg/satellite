@@ -1,7 +1,9 @@
+// +build !js
+
 package webrtc
 
 import (
-	"github.com/pions/webrtc/internal/ice"
+	"github.com/pions/ice"
 )
 
 // Configuration defines a set of parameters to configure how the

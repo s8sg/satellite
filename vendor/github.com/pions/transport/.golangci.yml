@@ -1,0 +1,17 @@
+linters-settings:
+  govet:
+    check-shadowing: true
+  misspell:
+    locale: US
+
+linters:
+  enable-all: true
+  disable:
+    - gochecknoinits
+    - gochecknoglobals
+    - goconst
+    - gocyclo
+    - dupl
+
+issues:
+  exclude-use-default: false

@@ -55,11 +55,12 @@ func (s *SessionSRTP) OpenWriteStream() (*WriteStreamSRTP, error) {
 // OpenReadStream opens a read stream for the given SSRC, it can be used
 // if you want a certain SSRC, but don't want to wait for AcceptStream
 func (s *SessionSRTP) OpenReadStream(SSRC uint32) (*ReadStreamSRTP, error) {
-	r, _ := s.session.getOrCreateReadStream(SSRC, s, &ReadStreamSRTP{})
+	r, _ := s.session.getOrCreateReadStream(SSRC, s, newReadStreamSRTP)
 
 	if readStream, ok := r.(*ReadStreamSRTP); ok {
 		return readStream, nil
 	}
+
 	return nil, fmt.Errorf("failed to open ReadStreamSRCTP, type assertion failed")
 }
 
@@ -83,7 +84,18 @@ func (s *SessionSRTP) Close() error {
 	return s.session.close()
 }
 
-func (s *SessionSRTP) write(buf []byte) (int, error) {
+func (s *SessionSRTP) write(b []byte) (int, error) {
+	packet := &rtp.Packet{}
+
+	err := packet.Unmarshal(b)
+	if err != nil {
+		return 0, nil
+	}
+
+	return s.writeRTP(&packet.Header, packet.Payload)
+}
+
+func (s *SessionSRTP) writeRTP(header *rtp.Header, payload []byte) (int, error) {
 	if _, ok := <-s.session.started; ok {
 		return 0, fmt.Errorf("started channel used incorrectly, should only be closed")
 	}
@@ -91,10 +103,11 @@ func (s *SessionSRTP) write(buf []byte) (int, error) {
 	s.session.localContextMutex.Lock()
 	defer s.session.localContextMutex.Unlock()
 
-	encrypted, err := s.localContext.EncryptRTP(nil, buf, nil)
+	encrypted, err := s.localContext.encryptRTP(nil, header, payload)
 	if err != nil {
 		return 0, err
 	}
+
 	return s.session.nextConn.Write(encrypted)
 }
 
@@ -104,7 +117,7 @@ func (s *SessionSRTP) decrypt(buf []byte) error {
 		return err
 	}
 
-	r, isNew := s.session.getOrCreateReadStream(h.SSRC, s, &ReadStreamSRTP{})
+	r, isNew := s.session.getOrCreateReadStream(h.SSRC, s, newReadStreamSRTP)
 	if r == nil {
 		return nil // Session has been closed
 	} else if isNew {
@@ -116,21 +129,14 @@ func (s *SessionSRTP) decrypt(buf []byte) error {
 		return fmt.Errorf("failed to get/create ReadStreamSRTP")
 	}
 
-	// Ensure that readStream.Close() isn't called while in flight
-	readStream.mu.Lock()
-	defer readStream.mu.Unlock()
-
-	readBuf := <-readStream.readCh
-	decrypted, err := s.remoteContext.decryptRTP(readBuf, buf, h)
+	decrypted, err := s.remoteContext.decryptRTP(buf, buf, h)
 	if err != nil {
 		return err
-	} else if len(decrypted) > len(readBuf) {
-		return fmt.Errorf("input buffer was not long enough to contain decrypted RTP")
 	}
 
-	readStream.readRetCh <- readResultSRTP{
-		len:    len(decrypted),
-		header: h,
+	_, err = readStream.write(decrypted)
+	if err != nil {
+		return err
 	}
 
 	return nil

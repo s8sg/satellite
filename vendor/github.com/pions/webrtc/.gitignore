@@ -10,6 +10,7 @@
 ###############
 bin/
 vendor/
+node_modules/
 
 ### Files ###
 #############
@@ -17,3 +18,6 @@ vendor/
 tags
 cover.out
 *.sw[poe]
+*.wasm
+examples/sfu-ws/cert.pem
+examples/sfu-ws/key.pem

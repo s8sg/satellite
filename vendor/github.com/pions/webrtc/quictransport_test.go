@@ -1,3 +1,5 @@
+// +build !js
+
 package webrtc
 
 import (
@@ -6,6 +8,7 @@ import (
 
 	"github.com/pions/quic"
 	"github.com/pions/transport/test"
+	"github.com/pions/webrtc/internal/util"
 )
 
 func TestQUICTransport_E2E(t *testing.T) {
@@ -143,7 +146,7 @@ func (s *testQuicStack) close() error {
 		closeErrs = append(closeErrs, err)
 	}
 
-	return flattenErrs(closeErrs)
+	return util.FlattenErrs(closeErrs)
 }
 
 type testQuicSignal struct {
@@ -217,5 +220,5 @@ func signalQuicPair(stackA *testQuicStack, stackB *testQuicStack) error {
 
 	closeErrs := []error{errA, errB}
 
-	return flattenErrs(closeErrs)
+	return util.FlattenErrs(closeErrs)
 }
