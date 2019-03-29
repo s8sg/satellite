@@ -22,7 +22,6 @@ var (
 type Args struct {
 	Port    int
 	UIPort  int
-	Server  bool
 	Remote  string
 	Version bool
 	Create  bool
@@ -33,18 +32,19 @@ func main() {
 	args := Args{}
 	flag.BoolVar(&args.Version, "version", false, "print version information and exit")
 	flag.IntVar(&args.Port, "port", 8000, "port for server or client's ui")
-	flag.BoolVar(&args.Server, "server", true, "server or client")
 	flag.BoolVar(&args.Create, "create", false, "create new channel")
 	flag.StringVar(&args.Join, "join", "", "channel id")
 	flag.StringVar(&args.Remote, "remote", "127.0.0.1:8000", " server address i.e. 127.0.0.1:8000")
 	flag.Parse()
+
+	isServer := args.Join == "" && !args.Create
 
 	switch {
 	case args.Version:
 		PrintVersionInfo()
 		os.Exit(0)
 
-	case args.Server:
+	case isServer:
 		// Server mode
 		server := server.Server{
 			Port: args.Port,
@@ -54,7 +54,7 @@ func main() {
 			panic(err)
 		}
 
-	case !args.Server:
+	case !isServer:
 		// Client Mode
 		client := client.Client{
 			Remote:   args.Remote,

@@ -9,12 +9,12 @@ build:
 	mkdir bin
 	mv satellite ./bin/
 
-.PHONY: build_docker
-build_docker:
+.PHONY: docker
+docker:
 	./build.sh
 
-.PHONY: build_redist
-build_redist:
+.PHONY: redist
+redist:
 	./build_redist.sh
 
 .PHONY: ci-armhf-push
