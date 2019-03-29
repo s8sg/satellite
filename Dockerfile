@@ -6,7 +6,6 @@ COPY .git             .git
 COPY vendor             vendor
 COPY pkg                pkg
 COPY main.go            .
-COPY parse_upstream.go  .
 
 ARG GIT_COMMIT
 ARG VERSION

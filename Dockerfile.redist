@@ -5,7 +5,6 @@ WORKDIR /go/src/github.com/s8sg/satellite
 COPY vendor            vendor
 COPY pkg                pkg
 COPY main.go            .
-COPY parse_upstream.go  .
 
 
 # Run a gofmt and exclude all vendored code.

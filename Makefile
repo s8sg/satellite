@@ -4,17 +4,17 @@ TAG?=latest
 all: clean build
 
 .PHONY: build
-build:
+build: clean
 	go build .
 	mkdir bin
 	mv satellite ./bin/
 
 .PHONY: docker
-docker:
+docker: clean
 	./build.sh
 
 .PHONY: redist
-redist:
+redist: clean
 	./build_redist.sh
 
 .PHONY: ci-armhf-push
